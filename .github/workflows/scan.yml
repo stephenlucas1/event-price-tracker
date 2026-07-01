@@ -30,7 +30,9 @@ jobs:
           VAPID_PUBLIC_KEY:  ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_CLAIM_EMAIL: ${{ secrets.VAPID_CLAIM_EMAIL }}
-          CV_CITIES:     ${{ vars.CV_CITIES }}
+          # Secret, not var: public Actions logs would show a var's value,
+          # and the city list narrows down who runs this.
+          CV_CITIES:     ${{ secrets.CV_CITIES }}
           CV_MAX_EVENTS: ${{ vars.CV_MAX_EVENTS }}
           CV_DROP_PCT:   ${{ vars.CV_DROP_PCT }}
         run: python cv_scanner.py

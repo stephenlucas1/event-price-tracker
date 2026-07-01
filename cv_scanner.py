@@ -33,6 +33,11 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# This runs in a public repo, so Actions logs are world-readable. Keep HTTP
+# client chatter (full request URLs) out of them.
+for _n in ("httpx", "httpcore", "urllib3"):
+    logging.getLogger(_n).setLevel(logging.WARNING)
+
 BASE     = "https://www.crowdvolt.com"
 SITEMAP  = f"{BASE}/sitemap.xml"
 EVENT_RE = re.compile(r"https://www\.crowdvolt\.com/event/[a-z0-9-]+")
@@ -162,8 +167,9 @@ def _push_deals(deals: list):
 
 
 def run():
-    log.info("-- scan started (cities=%s, cap=%d, drop>=%.0f%%) --",
-             CITIES or "ALL", MAX_EVENTS, DROP_PCT)
+    # Log the city *count*, not the list — these logs are public.
+    log.info("-- scan started (%d city filter(s), cap=%d, drop>=%.0f%%) --",
+             len(CITIES), MAX_EVENTS, DROP_PCT)
 
     try:
         sm = _get(SITEMAP)
