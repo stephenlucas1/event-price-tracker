@@ -44,10 +44,12 @@ EVENT_RE = re.compile(r"https://www\.crowdvolt\.com/event/[a-z0-9-]+")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
+# "or" fallbacks: unset GitHub Actions vars arrive as empty strings, and
+# int("")/float("") crash.
 CITIES     = [c.strip().lower() for c in os.environ.get("CV_CITIES", "").split(",") if c.strip()]
-MAX_EVENTS = int(os.environ.get("CV_MAX_EVENTS", "300"))
-DROP_PCT   = float(os.environ.get("CV_DROP_PCT", "15"))
-REQ_DELAY  = float(os.environ.get("CV_DELAY", "0.8"))
+MAX_EVENTS = int(os.environ.get("CV_MAX_EVENTS") or "300")
+DROP_PCT   = float(os.environ.get("CV_DROP_PCT") or "15")
+REQ_DELAY  = float(os.environ.get("CV_DELAY") or "0.8")
 MAX_PUSH   = 6
 
 
