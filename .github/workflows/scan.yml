@@ -1,10 +1,17 @@
 name: Price Scan
 
+# GitHub's cron scheduler throttles free-tier schedules by hours, so the
+# real cadence comes from self-chaining: one job scans every 15 minutes for
+# ~5.5 h (public repo = unlimited minutes, 6 h job cap), then dispatches its
+# own successor via the CHAIN_PAT secret. The cron below is only a fallback
+# that restarts the chain if a run dies or the secret is missing.
 on:
   schedule:
-    - cron: '*/15 * * * *'   # every 15 minutes (public repo = unlimited minutes)
+    - cron: '4,19,34,49 * * * *'
   workflow_dispatch:
 
+# Keeps duplicates from cron + chain harmless: only the newest pending run
+# in the group is kept queued while one runs.
 concurrency:
   group: cv-scan
   cancel-in-progress: false
@@ -12,6 +19,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run scan
+      - name: Scan every 15 min for ~5.5 h
         env:
           SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
@@ -35,4 +43,38 @@ jobs:
           CV_CITIES:     ${{ secrets.CV_CITIES }}
           CV_MAX_EVENTS: ${{ vars.CV_MAX_EVENTS }}
           CV_DROP_PCT:   ${{ vars.CV_DROP_PCT }}
-        run: python cv_scanner.py
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO:           ${{ secrets.ALERT_TO }}
+        run: |
+          end=$(( $(date +%s) + 5*3600 + 30*60 ))
+          cycle=0
+          while true; do
+            pass_start=$(date +%s)
+            python cv_scanner.py || echo "::warning::scan pass failed, continuing"
+            # AXS pages change slowly; poll hourly (every 4th cycle) to stay polite
+            if [ $(( cycle % 4 )) -eq 0 ]; then
+              python axs_monitor.py || echo "::warning::axs pass failed, continuing"
+            fi
+            cycle=$(( cycle + 1 ))
+            [ "$(date +%s)" -ge "$end" ] && break
+            sleep_for=$(( 900 - ( $(date +%s) - pass_start ) ))
+            [ "$sleep_for" -gt 0 ] && sleep "$sleep_for"
+          done
+
+      - name: Chain next run
+        if: always()
+        env:
+          CHAIN_PAT: ${{ secrets.CHAIN_PAT }}
+        run: |
+          if [ -z "$CHAIN_PAT" ]; then
+            echo "CHAIN_PAT not set - relying on fallback cron"
+            exit 0
+          fi
+          curl -sf -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $CHAIN_PAT" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/scan.yml/dispatches" \
+            -d '{"ref":"main"}' \
+            && echo "next run dispatched" \
+            || echo "::warning::chain dispatch failed - fallback cron will recover"
