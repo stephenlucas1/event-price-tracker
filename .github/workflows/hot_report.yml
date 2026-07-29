@@ -1,0 +1,45 @@
+name: Hot Board
+
+# Deliberately NOT part of the scan loop. That loop runs ~15-min cycles for
+# ~5.5h and then chains a successor, so "once a day" inside it would need a
+# marker file — and the marker lives on the runner's disk, which is wiped on
+# every chain restart. A restart landing in the report's window would send a
+# duplicate. A daily cron has no such state and cannot double-fire.
+#
+# Cron throttling is irrelevant here: the board is a once-a-day summary, so
+# an hour of drift costs nothing (unlike the scan, which needs the chain).
+
+on:
+  schedule:
+    - cron: '7 13 * * *'      # ~09:07 America/New_York
+  workflow_dispatch:
+
+concurrency:
+  group: cv-hot-report        # its own group, so it never queues behind a scan
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build and send the board
+        env:
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO:           ${{ secrets.ALERT_TO }}
+          CV_HOT_TOP:         ${{ secrets.CV_HOT_TOP }}
+          CV_HOT_DAYS:        ${{ secrets.CV_HOT_DAYS }}
+        run: python cv_hot_report.py

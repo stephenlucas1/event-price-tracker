@@ -50,6 +50,13 @@ jobs:
           CV_DROP_PCT:   ${{ vars.CV_DROP_PCT }}
           CV_HOME_REGION: ${{ secrets.CV_HOME_REGION }}
           CV_BUDGET_S:    ${{ vars.CV_BUDGET_S }}
+          # Drop-sniper tuning. Secrets rather than vars: a var's value is
+          # printed in public run logs, and these thresholds are the strategy.
+          # All have working defaults, so leaving them unset is fine.
+          CV_POPULAR_MIN: ${{ secrets.CV_POPULAR_MIN }}
+          CV_HOT_SALES:   ${{ secrets.CV_HOT_SALES }}
+          CV_HOT_DEMAND:  ${{ secrets.CV_HOT_DEMAND }}
+          CV_HOT_DAYS:    ${{ secrets.CV_HOT_DAYS }}
           GMAIL_USER:         ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           ALERT_TO:           ${{ secrets.ALERT_TO }}
@@ -61,7 +68,15 @@ jobs:
             # cv_scan.py supersedes cv_scanner.py (which is now just the
             # fetch/parse layer it imports). Running both would double-write
             # cv_history and double-count cv_sales_seen.
-            python cv_scan.py || echo "::warning::scan pass failed, continuing"
+            #
+            # The sniper only runs on a SUCCESSFUL scan. After a failed pass
+            # the stored lows are last cycle's, so every comparison would be
+            # stale-vs-stale — silence that looks like "no drops".
+            if python cv_scan.py; then
+              python cv_drop_alert.py || echo "::warning::drop alert failed, continuing"
+            else
+              echo "::warning::scan pass failed, skipping drop alert"
+            fi
             # AXS pages change slowly; poll hourly (every 4th cycle) to stay polite
             if [ $(( cycle % 4 )) -eq 0 ]; then
               python axs_monitor.py || echo "::warning::axs pass failed, continuing"

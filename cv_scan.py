@@ -74,9 +74,7 @@ USAGE:
 -----------------------------------------------------------
 """
 
-import hashlib
 import json
-import logging
 import os
 import random
 import re
@@ -85,37 +83,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import cv_log
+import supabase_helper
 from cv_scanner import (_get, _slug, _is_past, parse_event,
                         SITEMAP, EVENT_RE, REQ_DELAY)
 from cv_regions import parse_regions, region_of
-import supabase_helper
 
 HERE = Path(__file__).parent
 STATE_DIR = Path(os.environ.get("CV_STATE_DIR") or (HERE / ".cv_state"))
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 EMPTY_CACHE_PATH = STATE_DIR / "cv_empty.json"
 
-try:    # Windows consoles default to cp1252 and mangle em dashes to "?"
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
-
-# force=True: cv_scanner calls basicConfig at import, which would otherwise
-# make this a no-op and leave the log file permanently empty.
-_handlers = [logging.StreamHandler(sys.stdout)]
-if os.environ.get("CV_LOG_FILE"):
-    _handlers.append(logging.FileHandler(os.environ["CV_LOG_FILE"], encoding="utf-8"))
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    handlers=_handlers,
-    force=True,
-)
-log = logging.getLogger(__name__)
-
-# Public repo: keep HTTP client chatter (full request URLs) out of the logs.
-for _n in ("httpx", "httpcore", "urllib3", "hpack"):
-    logging.getLogger(_n).setLevel(logging.WARNING)
+log = cv_log.setup(__name__)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -125,7 +104,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-LOG_SLUGS = os.environ.get("CV_LOG_SLUGS") == "1"
 PRUNE_MIN_URLS = 100    # never prune off a suspiciously small sitemap
 PRUNE_CEIL_FRAC = 0.35  # nor delete more than this share of stored rows
 PRUNE_CEIL_MIN = 75     # ...with a floor, so small tables can still clean up
@@ -140,27 +118,6 @@ HOME = parse_regions(os.environ.get("CV_HOME_REGION") or "nyc")
 BUDGET_S = _env_int("CV_BUDGET_S", 600)
 EMPTY_RECHECK_MIN = _env_int("CV_EMPTY_RECHECK_MIN", 120)
 MAX_EVENTS = _env_int("CV_MAX_EVENTS", 0)                       # 0 = unlimited
-
-
-def _id(slug: str) -> str:
-    """Log-safe event id. Stable across runs, so a hash can still be traced
-    back through a local run with CV_LOG_SLUGS=1."""
-    if LOG_SLUGS:
-        return slug[:56]
-    return "#" + hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8]
-
-
-def _scope_label(regions: set) -> str:
-    if LOG_SLUGS:
-        return ",".join(sorted(regions)) or "all"
-    return "all" if not regions else f"{len(regions)} region(s)"
-
-
-def _region_label(slug: str) -> str:
-    """Only the --dry preview prints per-event regions, and --dry is a local
-    tool — but redact anyway so a debugging run on the runner can't publish
-    the city breakdown."""
-    return region_of(slug) if LOG_SLUGS else "-"
 
 
 def in_scope(slug: str) -> bool:
@@ -280,7 +237,7 @@ def _plan(urls: list, prev: dict, empty: dict, now: datetime):
 def run(dry: bool = False) -> int:
     now = datetime.now(timezone.utc)
     log.info("-- scan started (scope=%s, home=%s, budget=%ds) --",
-             _scope_label(SCOPE), _scope_label(HOME), BUDGET_S)
+             cv_log.scope_label(SCOPE), cv_log.scope_label(HOME), BUDGET_S)
 
     sb = supabase_helper.client()
     if sb is None:
@@ -322,8 +279,8 @@ def run(dry: bool = False) -> int:
         for u in queue[:15]:
             s = _slug(u)
             age = _age_min((prev.get(s) or {}).get("updated_at"), now)
-            log.info("   [%-13s] %-8s %s", _region_label(s),
-                     "NEW" if s not in prev else f"{age:.0f}m", _id(s))
+            log.info("   [%-13s] %-8s %s", cv_log.region_label(s),
+                     "NEW" if s not in prev else f"{age:.0f}m", cv_log.event_id(s))
         log.info("   ... %d more", max(0, len(queue) - 15))
 
     started = time.time()
@@ -339,7 +296,7 @@ def run(dry: bool = False) -> int:
             html = _get(url)
         except Exception as e:
             fetch_fail += 1
-            log.warning("skip %s: %s", _id(slug), e)
+            log.warning("skip %s: %s", cv_log.event_id(slug), e)
             time.sleep(REQ_DELAY)
             continue
         d = parse_event(html)
@@ -368,14 +325,14 @@ def run(dry: bool = False) -> int:
         if dry:
             scanned += 1
             log.info("   would store [%-13s] $%-7s %s",
-                     _region_label(slug), row["low_price"], _id(slug))
+                     cv_log.region_label(slug), row["low_price"], cv_log.event_id(slug))
             time.sleep(REQ_DELAY * random.uniform(0.6, 1.4))
             continue
         try:
             sb.table("cv_prices").upsert(row, on_conflict="slug").execute()
             scanned += 1
         except Exception as e:
-            log.error("save failed for %s: %s", _id(slug), e)
+            log.error("save failed for %s: %s", cv_log.event_id(slug), e)
             time.sleep(REQ_DELAY * random.uniform(0.6, 1.4))
             continue
 
@@ -387,7 +344,7 @@ def run(dry: bool = False) -> int:
                     {"slug": slug, "price": vol["last_sale"]}).execute()
                 sales_seen += 1
             except Exception as e:
-                log.error("cv_sales_seen insert failed for %s: %s", _id(slug), e)
+                log.error("cv_sales_seen insert failed for %s: %s", cv_log.event_id(slug), e)
 
         # Append history only when a tracked signal moved (keeps the table small).
         def _f(v):
@@ -411,7 +368,7 @@ def run(dry: bool = False) -> int:
                 }).execute()
                 hist_rows += 1
             except Exception as e:
-                log.error("cv_history insert failed for %s: %s", _id(slug), e)
+                log.error("cv_history insert failed for %s: %s", cv_log.event_id(slug), e)
         time.sleep(REQ_DELAY * random.uniform(0.6, 1.4))
 
     # Prune rows we are no longer maintaining. Two kinds of zombie:
