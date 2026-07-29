@@ -40,9 +40,16 @@ jobs:
           VAPID_CLAIM_EMAIL: ${{ secrets.VAPID_CLAIM_EMAIL }}
           # Secret, not var: public Actions logs would show a var's value,
           # and the city list narrows down who runs this.
+          # Leave CV_CITIES UNSET to scan every region. If it is set, this
+          # runner prunes every row outside that scope on each pass — which
+          # is correct for a single runner and destructive if another one is
+          # covering the rest. cv_scan.py's prune ceiling aborts rather than
+          # mass-delete, but the fix is to not set it.
           CV_CITIES:     ${{ secrets.CV_CITIES }}
           CV_MAX_EVENTS: ${{ vars.CV_MAX_EVENTS }}
           CV_DROP_PCT:   ${{ vars.CV_DROP_PCT }}
+          CV_HOME_REGION: ${{ secrets.CV_HOME_REGION }}
+          CV_BUDGET_S:    ${{ vars.CV_BUDGET_S }}
           GMAIL_USER:         ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           ALERT_TO:           ${{ secrets.ALERT_TO }}
@@ -51,7 +58,10 @@ jobs:
           cycle=0
           while true; do
             pass_start=$(date +%s)
-            python cv_scanner.py || echo "::warning::scan pass failed, continuing"
+            # cv_scan.py supersedes cv_scanner.py (which is now just the
+            # fetch/parse layer it imports). Running both would double-write
+            # cv_history and double-count cv_sales_seen.
+            python cv_scan.py || echo "::warning::scan pass failed, continuing"
             # AXS pages change slowly; poll hourly (every 4th cycle) to stay polite
             if [ $(( cycle % 4 )) -eq 0 ]; then
               python axs_monitor.py || echo "::warning::axs pass failed, continuing"
