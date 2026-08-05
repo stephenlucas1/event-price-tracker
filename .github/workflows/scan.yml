@@ -106,7 +106,23 @@ jobs:
             exit 1
           fi
 
+      # Immediate notice for a run that RAN and failed. Silence — no run at
+      # all — is watchdog.yml's job; a failure hook cannot catch it.
+      - name: Report a dead feed
+        if: failure()
+        env:
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO:           ${{ secrets.ALERT_TO }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python cv_feed_alarm.py --run-failed
+
       - name: Chain next run
+        # always(), so a failed scan still chains its successor — otherwise
+        # one bad pass ends the chain and the feed dies quietly, which is
+        # the failure this whole file is trying to prevent.
         if: always()
         env:
           CHAIN_PAT: ${{ secrets.CHAIN_PAT }}

@@ -1,0 +1,54 @@
+name: Feed Watchdog
+
+# A dead-man's switch for cv_prices, and the ONLY thing that catches the
+# scan not running at all. scan.yml's `if: failure()` hook covers a run
+# that executed and failed; it cannot cover silence — a dead self-chain,
+# a revoked CHAIN_PAT, or GitHub throttling every trigger produce NO run,
+# so there is nothing to hang a failure hook on.
+#
+# Deliberately independent of the scan:
+#   * its own concurrency group, so it never queues behind a 5.5 h scan
+#     job (queuing behind the thing you are watching defeats the point)
+#   * its own cron, so a broken scan schedule cannot silence it
+#   * no checkout of scan state, no shared marker file
+#
+# Cron throttling on the free tier is acceptable here: this is a
+# staleness check with a 6 h thermostat, so an hour of drift is harmless.
+
+on:
+  schedule:
+    - cron: '23 */3 * * *'      # every ~3 h, off the top of the hour
+  workflow_dispatch:
+
+concurrency:
+  group: cv-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check the feed is still being written
+        env:
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO:           ${{ secrets.ALERT_TO }}
+          # Hours before the feed counts as dead. The scan writes every
+          # ~15 min, so 6 h is ~24 missed passes — well clear of a slow
+          # pass or one throttled cron tick.
+          CV_FEED_MAX_AGE_H:  ${{ vars.CV_FEED_MAX_AGE_H }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python cv_feed_alarm.py
