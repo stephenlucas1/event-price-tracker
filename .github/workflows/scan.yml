@@ -46,6 +46,12 @@ jobs:
           # covering the rest. cv_scan.py's prune ceiling aborts rather than
           # mass-delete, but the fix is to not set it.
           CV_CITIES:     ${{ secrets.CV_CITIES }}
+          # Set ONLY if CrowdVolt's bot gate turns out to score datacenter IPs
+          # as well as TLS fingerprints — the impersonation in cv_scanner._get
+          # is verified from a residential IP, not from this runner. Secret,
+          # never a var: it carries proxy credentials and these logs are public.
+          CV_PROXY:       ${{ secrets.CV_PROXY }}
+          CV_IMPERSONATE: ${{ secrets.CV_IMPERSONATE }}
           CV_MAX_EVENTS: ${{ vars.CV_MAX_EVENTS }}
           CV_DROP_PCT:   ${{ vars.CV_DROP_PCT }}
           CV_HOME_REGION: ${{ secrets.CV_HOME_REGION }}

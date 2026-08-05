@@ -81,6 +81,15 @@ try:
 except ImportError:                                    # degrade, don't crash
     _cr = None
 
+# The impersonation above is verified from a RESIDENTIAL IP. If CrowdVolt's
+# gate also scores IP reputation, a datacenter runner stays blocked no matter
+# how good the fingerprint is — and the runner is the whole reason this moved
+# off the workstation. CV_PROXY routes the fetch through a residential exit.
+# Unset = direct, which is the right default while direct still works.
+# NEVER log this value: it carries credentials and Actions logs are public.
+PROXY = (os.environ.get("CV_PROXY") or "").strip()
+_PROXIES = {"http": PROXY, "https": PROXY} if PROXY else None
+
 _profile = None      # impersonation known to work; resolved once per process
 
 
@@ -92,7 +101,8 @@ def _get(url: str) -> str:
     """
     global _profile
     if _cr is None:
-        r = requests.get(url, headers=_headers(), timeout=25)
+        r = requests.get(url, headers=_headers(), timeout=25,
+                         proxies=_PROXIES)
         r.raise_for_status()
         return r.text
 
@@ -102,13 +112,15 @@ def _get(url: str) -> str:
     for prof in order:
         try:
             r = _cr.get(url, headers=_headers(with_ua=False),
-                        impersonate=prof, timeout=25)
+                        impersonate=prof, timeout=25, proxies=_PROXIES)
         except Exception as e:                          # transport-level failure
             last = e
             continue
         if r.status_code == 200:
             if prof != _profile:
-                log.info("fetch: using impersonation %s", prof)
+                # "via proxy" only — never the URL itself (public logs).
+                log.info("fetch: using impersonation %s%s", prof,
+                         " via proxy" if PROXY else " direct")
                 _profile = prof
             return r.text
         last = requests.HTTPError(f"{r.status_code} for {url.split('/')[-1]}")
