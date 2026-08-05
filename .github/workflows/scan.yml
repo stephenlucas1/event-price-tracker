@@ -63,6 +63,8 @@ jobs:
         run: |
           end=$(( $(date +%s) + 5*3600 + 30*60 ))
           cycle=0
+          ok=0
+          failed=0
           while true; do
             pass_start=$(date +%s)
             # cv_scan.py supersedes cv_scanner.py (which is now just the
@@ -73,8 +75,10 @@ jobs:
             # the stored lows are last cycle's, so every comparison would be
             # stale-vs-stale — silence that looks like "no drops".
             if python cv_scan.py; then
+              ok=$(( ok + 1 ))
               python cv_drop_alert.py || echo "::warning::drop alert failed, continuing"
             else
+              failed=$(( failed + 1 ))
               echo "::warning::scan pass failed, skipping drop alert"
             fi
             # AXS pages change slowly; poll hourly (every 4th cycle) to stay polite
@@ -86,6 +90,15 @@ jobs:
             sleep_for=$(( 900 - ( $(date +%s) - pass_start ) ))
             [ "$sleep_for" -gt 0 ] && sleep "$sleep_for"
           done
+          echo "passes: $ok ok, $failed failed"
+          # Every pass failing used to still exit 0, because the `if` above
+          # swallows it. That is how the 2026-08-04 CrowdVolt bot gate stayed
+          # invisible for a day: green runs, 5.5 h each, writing nothing.
+          # A run that never once scanned is a dead feed, not an idle one.
+          if [ "$ok" -eq 0 ]; then
+            echo "::error::every scan pass failed ($failed) — the feed is DOWN, not idle"
+            exit 1
+          fi
 
       - name: Chain next run
         if: always()

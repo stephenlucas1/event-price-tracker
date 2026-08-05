@@ -153,6 +153,16 @@ def run(dry: bool = False) -> int:
         log.error("no Supabase client — SUPABASE_URL/SUPABASE_KEY not set")
         return 1
 
+    # The board reports "current low" per event. If the scan has stopped, those
+    # are yesterday's lows wearing today's date — the 2026-08-05 board went out
+    # on prices frozen 21h earlier. A daily board can tolerate a longer window
+    # than the sniper, but not an unbounded one.
+    stale, why = supabase_helper.feed_is_stale(sb, default_max_min=720.0)
+    if stale and not dry:
+        log.error("NOT sending the board: %s", why)
+        return 1
+    log.info("feed check: %s", why)
+
     board = build_board(sb, top_n, hot_days)
     if not board:
         log.info("no upcoming events with any volume signal — no board today")

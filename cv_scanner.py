@@ -53,20 +53,70 @@ REQ_DELAY  = float(os.environ.get("CV_DELAY") or "0.8")
 MAX_PUSH   = 6
 
 
-def _headers():
-    return {
-        "User-Agent": UA,
+def _headers(with_ua: bool = True):
+    h = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate",
         "Referer": BASE + "/",
     }
+    # When impersonating, curl_cffi sets a UA matching the TLS fingerprint.
+    # Overriding it with our Chrome UA contradicts the handshake and re-gates.
+    if with_ua:
+        h["User-Agent"] = UA
+    return h
+
+
+# CrowdVolt turned on a bot gate around 2026-08-04 — the site was open before.
+# Verified 2026-08-05 against /sitemap.xml AND event pages: plain requests 403,
+# curl_cffi chrome131/chrome124 403, curl_cffi safari17_0 200. Same fingerprint
+# trick that works for AXS. Order matters: known-good first, so the common case
+# is one request. Override with CV_IMPERSONATE if CrowdVolt rotates again.
+IMPERSONATE = [s.strip() for s in
+               (os.environ.get("CV_IMPERSONATE")
+                or "safari17_0,safari15_5,chrome131").split(",") if s.strip()]
+
+try:
+    from curl_cffi import requests as _cr
+except ImportError:                                    # degrade, don't crash
+    _cr = None
+
+_profile = None      # impersonation known to work; resolved once per process
 
 
 def _get(url: str) -> str:
-    r = requests.get(url, headers=_headers(), timeout=25)
-    r.raise_for_status()
-    return r.text
+    """Fetch a CrowdVolt page, defeating the bot gate by TLS impersonation.
+
+    Resolves the working impersonation ONCE and reuses it — a per-call probe
+    would multiply a ~250-event pass by the number of candidates.
+    """
+    global _profile
+    if _cr is None:
+        r = requests.get(url, headers=_headers(), timeout=25)
+        r.raise_for_status()
+        return r.text
+
+    order = ([_profile] + [p for p in IMPERSONATE if p != _profile]
+             if _profile else list(IMPERSONATE))
+    last = None
+    for prof in order:
+        try:
+            r = _cr.get(url, headers=_headers(with_ua=False),
+                        impersonate=prof, timeout=25)
+        except Exception as e:                          # transport-level failure
+            last = e
+            continue
+        if r.status_code == 200:
+            if prof != _profile:
+                log.info("fetch: using impersonation %s", prof)
+                _profile = prof
+            return r.text
+        last = requests.HTTPError(f"{r.status_code} for {url.split('/')[-1]}")
+        # Only a gate is worth re-probing; a 404 means this page is simply gone.
+        if r.status_code not in (401, 403, 429):
+            break
+    _profile = None                                     # force a re-probe next call
+    raise last or requests.HTTPError(f"all impersonations failed for {url}")
 
 
 def _field(pat: str, html: str):

@@ -205,6 +205,14 @@ def run(dry: bool = False) -> int:
         log.error("no Supabase client — SUPABASE_URL/SUPABASE_KEY not set")
         return 1
 
+    # A sniper firing off frozen prices sends you to buy a drop that expired
+    # yesterday. Refuse rather than mislead; exit 1 so the task shows red.
+    stale, why = supabase_helper.feed_is_stale(sb)
+    if stale and not dry:
+        log.error("NOT alerting: %s", why)
+        return 1
+    log.info("feed check: %s", why)
+
     try:
         rows = (sb.table("cv_prices")
                 .select("slug,event_name,venue,low_price,low_price_all_in,"
