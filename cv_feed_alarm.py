@@ -96,8 +96,62 @@ def run_failed() -> int:
     return 1
 
 
+def probe_crowdvolt(attempts: int = 3):
+    """Can THIS host reach CrowdVolt at all? (ok: bool, detail: str)
+
+    Runs on the watchdog's own schedule and concurrency group, so it answers
+    the question the scan job cannot: the scan is a 5.5 h loop holding the
+    cv-scan slot, and everything queued behind it is cancelled without ever
+    executing — a cancelled run tells you nothing about the gate.
+
+    This is the check that separates "the feed is stale because nothing ran"
+    from "the feed is stale because this runner is gated", which need
+    completely different fixes. Retries, so one Cloudflare blip cannot page.
+    """
+    import cv_scanner
+    last = ""
+    for i in range(attempts):
+        try:
+            body = cv_scanner._get(cv_scanner.SITEMAP)
+            n = body.count("crowdvolt.com/event/")
+            return True, (f"reachable — sitemap fetched, {n} event URLs, "
+                          f"impersonation {cv_scanner._profile or 'n/a'}")
+        except Exception as e:
+            last = f"{type(e).__name__}: {str(e)[:90]}"
+            log.warning("probe attempt %d/%d failed: %s", i + 1, attempts, last)
+            if i + 1 < attempts:
+                import time
+                time.sleep(5)
+    return False, last
+
+
 def watchdog() -> int:
     max_h = _max_age_h()
+
+    # Probe BEFORE the staleness verdict: the PC keeps the feed fresh whenever
+    # it is on, so a fresh-feed early return would never answer whether THIS
+    # host can fetch. A gated runner is a real failure even while the PC is
+    # covering — it means the cloud is decorative.
+    reachable, detail = probe_crowdvolt()
+    log.info("crowdvolt from this runner: %s (%s)",
+             "OK" if reachable else "BLOCKED", detail)
+    if not reachable:
+        _send("CrowdVolt is unreachable FROM THE RUNNER — cloud scan is dead",
+              ["This host cannot fetch CrowdVolt even with TLS impersonation.",
+               f"Last error: {detail}",
+               "",
+               "The gate is a Cloudflare managed challenge. The impersonation",
+               "is verified from the house, so this means the datacenter IP is",
+               "being scored too — the cloud scan cannot work as-is.",
+               "",
+               "Fix: set the CV_PROXY secret to a residential proxy. NOT one of",
+               "the Dice-account IPRoyal proxies — Dice account standing is",
+               "worth more than a stale feed.",
+               "",
+               "Alternatively try another CV_IMPERSONATE profile first; that is",
+               "free and sometimes enough."])
+        return 1
+
     age_h, why = _age_hours()
     if age_h is None:
         log.error("watchdog could not determine feed age: %s", why)
@@ -117,10 +171,10 @@ def watchdog() -> int:
         f"CrowdVolt feed is {age_h:.0f} h stale — the scan has stopped",
         [f"Newest cv_prices row is {age_h:.1f} h old (limit {max_h:.0f} h).",
          "",
-         "No Price Scan run reported a failure, which means runs are not",
-         "happening at all rather than failing — the self-chain is dead.",
-         "Usual cause: an expired CHAIN_PAT. The fallback cron is throttled",
-         "and will not hold the cadence on its own.",
+         f"CrowdVolt IS reachable from this runner ({detail}), so this is not",
+         "the bot gate — scan runs are not happening at all. The self-chain is",
+         "dead. Usual cause: an expired CHAIN_PAT. The fallback cron is",
+         "throttled and will not hold the cadence on its own.",
          "",
          "Fix: reissue the stephenlucas1 PAT and update the CHAIN_PAT secret,",
          "then dispatch Price Scan once to restart the chain."])
