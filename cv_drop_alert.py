@@ -48,6 +48,7 @@ from datetime import datetime, timedelta, timezone
 
 import cv_email
 import cv_log
+import notify_helper
 import supabase_helper
 from cv_regions import region_of
 
@@ -193,6 +194,53 @@ def render_digest(drops: list) -> tuple[str, str, str]:
     return subject, text, html
 
 
+def post_to_feed(sb, drops: list, subject: str) -> None:
+    """Same drops, into the app's Alerts tab and onto the phone as a push.
+
+    The email is the archive; the push is what gets seen in time. One row per
+    drop in dice_alerts (the Dice monitor's feed — the app reads one table),
+    event_id prefixed "cv:" so it can never collide with a Dice id, and ONE
+    push per pass carrying the digest subject, deep-linked to the first row.
+    Failures here never block the email: it's logged and the pass goes on.
+    """
+    rows = []
+    for d in sorted(drops, key=lambda d: -d["pct"]):
+        city = region_of(d["slug"]).replace("-", " ").upper()
+        rows.append({
+            "event_id": "cv:" + d["slug"],
+            "event_name": d["event_name"],
+            "venue": " · ".join(x for x in (d.get("venue") or "", city, d.get("event_end") or "") if x),
+            "kind": "CrowdVolt Drop",
+            "summary": f"lowest ask: ${d['prev']:.0f} → ${d['low']:.0f} (-{d['pct']:.0f}%)",
+            "detail": {"hot": d["hot"], "n_sales": d["n_sales"], "demand": d["demand"],
+                       "last_sale": d["last_sale"], "all_in": d["all_in"],
+                       "prev": d["prev"], "low": d["low"], "pct": round(d["pct"], 1)},
+            "url": d["url"], "cv_url": d["url"],
+        })
+    first_id = None
+    try:
+        ins = sb.table("dice_alerts").insert(rows).execute()
+        ids = [r.get("id") for r in (ins.data or []) if r.get("id") is not None]
+        first_id = min(ids) if ids else None
+    except Exception as e:
+        log.error("dice_alerts insert failed: %s", type(e).__name__)
+        return
+    body = "\n".join(f"{r['event_name']}: {r['summary']}" for r in rows)[:180]
+    app_url = f"/?tab=alerts&alert={first_id}" if first_id else "/?tab=alerts"
+    try:
+        n = notify_helper.send_push("📉 " + subject, body, app_url)
+    except Exception as e:
+        log.error("push failed: %s", type(e).__name__)
+        n = 0
+    if first_id is not None and n:
+        try:
+            (sb.table("dice_alerts").update({"pushed": True})
+             .eq("kind", "CrowdVolt Drop").gte("id", first_id).execute())
+        except Exception:
+            pass
+    log.info("feed: %d row(s), push to %d device(s)", len(rows), n)
+
+
 def run(dry: bool = False) -> int:
     drop_pct = _env_float("CV_DROP_PCT", 10.0)
     popular_min = _env_float("CV_POPULAR_MIN", 75.0)
@@ -247,6 +295,7 @@ def run(dry: bool = False) -> int:
         sent = True
     else:
         sent = cv_email.send(subject, text, html)
+        post_to_feed(sb, drops, subject)
 
     for d in drops:
         # Redacted: these logs are public. The email carries the real names.
