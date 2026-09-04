@@ -42,6 +42,7 @@ USAGE:
 -----------------------------------------------------------
 """
 
+import html
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -208,7 +209,7 @@ def post_to_feed(sb, drops: list, subject: str) -> None:
         city = region_of(d["slug"]).replace("-", " ").upper()
         rows.append({
             "event_id": "cv:" + d["slug"],
-            "event_name": d["event_name"],
+            "event_name": html.unescape(d["event_name"] or ""),   # CV names carry "&amp;"
             "venue": " · ".join(x for x in (d.get("venue") or "", city, d.get("event_end") or "") if x),
             "kind": "CrowdVolt Drop",
             "summary": f"lowest ask: ${d['prev']:.0f} → ${d['low']:.0f} (-{d['pct']:.0f}%)",
