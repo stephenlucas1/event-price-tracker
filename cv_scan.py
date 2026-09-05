@@ -153,6 +153,13 @@ def _volume_signals(html: str) -> dict:
     ltg = _rsc_num(html, "looking_to_go")
     lts = _rsc_num(html, "looking_to_sell")
     rem = _rsc_num(html, "tickets_remaining")
+    # The full ladder, ascending, merged per price point so the undercut
+    # alert can say "3 asks (5 tix) below yours, next above you $84".
+    # Capped so a 100-listing event can't bloat the row.
+    ladder: dict = {}
+    for p, q in asks:
+        ladder[float(p)] = ladder.get(float(p), 0) + int(q)
+    ladder_rows = [{"p": p, "q": q} for p, q in sorted(ladder.items())][:40]
     return {
         "last_sale": last_sale,
         "looking_to_go": int(ltg) if ltg is not None else None,
@@ -161,6 +168,7 @@ def _volume_signals(html: str) -> dict:
         "highest_bid": _rsc_num(html, "max_bid"),
         "ask_count": len(asks),
         "ask_qty": sum(int(q) for _, q in asks),
+        "asks": ladder_rows,
     }
 
 

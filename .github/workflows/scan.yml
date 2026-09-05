@@ -83,6 +83,8 @@ jobs:
             if python cv_scan.py; then
               ok=$(( ok + 1 ))
               python cv_drop_alert.py || echo "::warning::drop alert failed, continuing"
+              # Your own asks vs the fresh book — same freshness rule as the sniper.
+              python cv_undercut_alert.py || echo "::warning::undercut alert failed, continuing"
             else
               failed=$(( failed + 1 ))
               echo "::warning::scan pass failed, skipping drop alert"
