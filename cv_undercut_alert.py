@@ -158,7 +158,12 @@ def classify(listing: dict, price: dict, tol: float) -> dict:
         bottom_qty = int(ladder[0]["q"]) if ladder else my_qty
         status = "tied" if bottom_qty > my_qty else "lowest"
 
-    below = [a for a in ladder if float(a["p"]) < my_all_in - tol]
+    # The RSC ladder also carries entries under the event's own floor (seen
+    # 2026-09-08: $62/$67/$72 points on an event whose lowest ask was $98
+    # all-in — other ticket types or bids, not buyable asks). Only points
+    # between the floor and your ask can be "under you".
+    floor = all_in - tol if all_in > 0 else 0
+    below = [a for a in ladder if floor <= float(a["p"]) < my_all_in - tol]
     above = [a for a in ladder if float(a["p"]) > my_all_in + tol]
     return {
         "slug": listing["slug"],
