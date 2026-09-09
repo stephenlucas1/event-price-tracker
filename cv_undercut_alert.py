@@ -18,9 +18,9 @@ also a seller price, so no fee math is needed) and classifies it:
 
 Alerts fire on TRANSITIONS only — lowest/tied -> undercut is the one that
 matters; undercut -> lowest ("back on top") and lowest -> not_visible
-("did it sell?") are sent as quieter info lines in the same digest. A
-listing first seen already undercut alerts once, because that is the
-actionable case. Then nothing repeats until the standing changes again.
+("did it sell?") are sent as quieter info lines in the same digest. The
+first sighting of a listing is baseline only (the app's Deals tab shows
+its standing immediately); nothing repeats until the standing changes.
 
 State is `cv_undercut_state` in the database for the same reason
 cv_drop_alert keeps its state there: runner disk is wiped every chain.
@@ -181,10 +181,10 @@ def transitions(cur: dict, prev: dict | None) -> str | None:
     """Which alert, if any, this pass's standing earns. None = stay quiet."""
     s = cur["status"]
     p = (prev or {}).get("status")
-    if s == "undercut" and p != "undercut":
-        return "undercut"                       # incl. first sighting already under
     if prev is None:
-        return None                             # baseline, nothing else to say
+        return None     # baseline only — bulk-seeding 13 asks must not fire 12 alerts
+    if s == "undercut" and p != "undercut":
+        return "undercut"
     if s in ("lowest", "tied") and p == "undercut":
         return "back_on_top"
     if s == "not_visible" and p in ("lowest", "tied"):
