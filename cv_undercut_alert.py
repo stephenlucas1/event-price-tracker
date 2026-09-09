@@ -30,7 +30,7 @@ Each digest goes out as ONE email plus dice_alerts rows (kind
 
 Env knobs:
     CV_UNDERCUT_TOL=0.5   dollars of slack before "under" counts as under
-    plus GMAIL_* / ALERT_TO / VAPID_* (see cv_email.py, notify_helper.py)
+    plus GMAIL_* / ALERT_TO / VAPID_* (see cv_email.py, cv_feed.py)
 
 USAGE:
     python cv_undercut_alert.py           # one pass
@@ -45,8 +45,8 @@ import sys
 from datetime import datetime, timezone
 
 import cv_email
+import cv_feed
 import cv_log
-import notify_helper
 import supabase_helper
 from cv_regions import region_of
 
@@ -261,10 +261,9 @@ def render_digest(alerts: list) -> tuple[str, str, str]:
     return subject, text, body
 
 
-def post_to_feed(sb, alerts: list, subject: str) -> None:
-    """Same alerts into the app's Alerts tab + one push. Mirrors
-    cv_drop_alert.post_to_feed; event_id prefixed "cv:" so it never collides
-    with a Dice id."""
+def feed_rows(alerts: list) -> list:
+    """dice_alerts rows for a digest; event_id prefixed "cv:" so it never
+    collides with a Dice id."""
     rows = []
     for a in alerts:
         c = a["cur"]
@@ -282,29 +281,7 @@ def post_to_feed(sb, alerts: list, subject: str) -> None:
                        "next_above": c["next_above"], "suggest": c["suggest"]},
             "url": c["url"], "cv_url": c["url"],
         })
-    first_id = None
-    try:
-        ins = sb.table("dice_alerts").insert(rows).execute()
-        ids = [r.get("id") for r in (ins.data or []) if r.get("id") is not None]
-        first_id = min(ids) if ids else None
-    except Exception as e:
-        log.error("dice_alerts insert failed: %s", type(e).__name__)
-        return
-    body = "\n".join(f"{r['event_name']}: {r['summary']}" for r in rows)[:180]
-    app_url = f"/?tab=alerts&alert={first_id}" if first_id else "/?tab=alerts"
-    icon = "🔻" if any(a["kind"] == "undercut" for a in alerts) else "💜"
-    try:
-        n = notify_helper.send_push(f"{icon} " + subject, body, app_url)
-    except Exception as e:
-        log.error("push failed: %s", type(e).__name__)
-        n = 0
-    if first_id is not None and n:
-        try:
-            (sb.table("dice_alerts").update({"pushed": True})
-             .eq("kind", KIND).gte("id", first_id).execute())
-        except Exception:
-            pass
-    log.info("feed: %d row(s), push to %d device(s)", len(rows), n)
+    return rows
 
 
 # -------------------------------------------------------------------- run
@@ -396,8 +373,12 @@ def run(dry: bool = False, status_only: bool = False) -> int:
         print(f"\n--- DRY DIGEST ---\nSUBJECT: {subject}\n{text}------------------")
         sent = True
     else:
-        sent = cv_email.send(subject, text, body)
-        post_to_feed(sb, alerts, subject)
+        rows = feed_rows(alerts)
+        icon = "🔻" if any(a["kind"] == "undercut" for a in alerts) else "💜"
+        push_body = "\n".join(f"{r['event_name']}: {r['summary']}" for r in rows)
+        res = cv_feed.deliver(sb, rows, f"{icon} " + subject, push_body,
+                              email=lambda: cv_email.send(subject, text, body))
+        sent = res.emailed
 
     for a in alerts:
         c = a["cur"]

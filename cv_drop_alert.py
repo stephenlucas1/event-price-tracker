@@ -48,8 +48,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 import cv_email
+import cv_feed
 import cv_log
-import notify_helper
 import supabase_helper
 from cv_regions import region_of
 
@@ -195,15 +195,8 @@ def render_digest(drops: list) -> tuple[str, str, str]:
     return subject, text, html
 
 
-def post_to_feed(sb, drops: list, subject: str) -> None:
-    """Same drops, into the app's Alerts tab and onto the phone as a push.
-
-    The email is the archive; the push is what gets seen in time. One row per
-    drop in dice_alerts (the Dice monitor's feed — the app reads one table),
-    event_id prefixed "cv:" so it can never collide with a Dice id, and ONE
-    push per pass carrying the digest subject, deep-linked to the first row.
-    Failures here never block the email: it's logged and the pass goes on.
-    """
+def feed_rows(drops: list) -> list:
+    """dice_alerts rows for a digest (event_id "cv:<slug>", never a Dice id)."""
     rows = []
     for d in sorted(drops, key=lambda d: -d["pct"]):
         city = region_of(d["slug"]).replace("-", " ").upper()
@@ -218,28 +211,7 @@ def post_to_feed(sb, drops: list, subject: str) -> None:
                        "prev": d["prev"], "low": d["low"], "pct": round(d["pct"], 1)},
             "url": d["url"], "cv_url": d["url"],
         })
-    first_id = None
-    try:
-        ins = sb.table("dice_alerts").insert(rows).execute()
-        ids = [r.get("id") for r in (ins.data or []) if r.get("id") is not None]
-        first_id = min(ids) if ids else None
-    except Exception as e:
-        log.error("dice_alerts insert failed: %s", type(e).__name__)
-        return
-    body = "\n".join(f"{r['event_name']}: {r['summary']}" for r in rows)[:180]
-    app_url = f"/?tab=alerts&alert={first_id}" if first_id else "/?tab=alerts"
-    try:
-        n = notify_helper.send_push("📉 " + subject, body, app_url)
-    except Exception as e:
-        log.error("push failed: %s", type(e).__name__)
-        n = 0
-    if first_id is not None and n:
-        try:
-            (sb.table("dice_alerts").update({"pushed": True})
-             .eq("kind", "CrowdVolt Drop").gte("id", first_id).execute())
-        except Exception:
-            pass
-    log.info("feed: %d row(s), push to %d device(s)", len(rows), n)
+    return rows
 
 
 def run(dry: bool = False) -> int:
@@ -295,8 +267,14 @@ def run(dry: bool = False) -> int:
         print(f"\n--- DRY DIGEST ---\nSUBJECT: {subject}\n{text}------------------")
         sent = True
     else:
-        sent = cv_email.send(subject, text, html)
-        post_to_feed(sb, drops, subject)
+        # Feed + push + email through one helper: channels fail independently,
+        # receipts land on the inserted rows, and a push nobody received is
+        # reported (the Render sweeper retries unpushed rows).
+        rows = feed_rows(drops)
+        body = "\n".join(f"{r['event_name']}: {r['summary']}" for r in rows)
+        res = cv_feed.deliver(sb, rows, "📉 " + subject, body,
+                              email=lambda: cv_email.send(subject, text, html))
+        sent = res.emailed
 
     for d in drops:
         # Redacted: these logs are public. The email carries the real names.
