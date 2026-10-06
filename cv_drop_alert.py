@@ -1,8 +1,10 @@
 """
 cv_drop_alert.py
 -----------------------------------------------------------
-Email when an event's lowest ask DROPS sharply — someone just listed well
-under the going rate, i.e. a snipe/flip window.
+Alert when an event's lowest ask DROPS sharply — someone just listed well
+under the going rate, i.e. a snipe/flip window. Drops go to the app feed
+and push only: they are frequent and short-lived, and the inbox is kept
+for alerts that need a decision (EMAIL_DROPS = True restores the email).
 
 Runs right after cv_scan.py in the same cycle, so "previous" means "as of
 the last scan, ~15 min ago". Alerts when:
@@ -18,7 +20,7 @@ looking_to_go >= CV_HOT_DEMAND (default 20). Hot events alert even under
 the price floor — a $60 low on a high-volume event is a better flip than
 an $80 low on a dead one.
 
-All drops in a pass go into ONE digest email. First sighting of an event
+All drops in a pass go into ONE digest. First sighting of an event
 is baseline only. The stored low is updated every pass, up or down, so an
 event that climbs back re-arms itself for the next sharp drop.
 
@@ -56,6 +58,7 @@ from cv_regions import region_of
 log = cv_log.setup(__name__)
 
 STATE_TABLE = "cv_alert_state"
+EMAIL_DROPS = False      # True: also email each digest (feed + push always)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -265,22 +268,22 @@ def run(dry: bool = False) -> int:
     subject, text, html = render_digest(drops)
     if dry:
         print(f"\n--- DRY DIGEST ---\nSUBJECT: {subject}\n{text}------------------")
-        sent = True
+        sent = "dry run"
     else:
-        # Feed + push + email through one helper: channels fail independently,
-        # receipts land on the inserted rows, and a push nobody received is
-        # reported (the Render sweeper retries unpushed rows).
+        # Feed + push (+ email if EMAIL_DROPS) through one helper: channels
+        # fail independently, receipts land on the inserted rows, and a push
+        # nobody received is reported (the Render sweeper retries unpushed rows).
         rows = feed_rows(drops)
         body = "\n".join(f"{r['event_name']}: {r['summary']}" for r in rows)
         res = cv_feed.deliver(sb, rows, "📉 " + subject, body,
-                              email=lambda: cv_email.send(subject, text, html))
-        sent = res.emailed
+                              email=(lambda: cv_email.send(subject, text, html)) if EMAIL_DROPS else None)
+        sent = "emailed" if res.emailed else ("in app feed" if res.feed_ids else "LOGGED ONLY")
 
     for d in drops:
         # Redacted: these logs are public. The email carries the real names.
         log.info("DROP %-12s $%.2f -> $%.2f (-%.0f%%)%s %s",
                  cv_log.event_id(d["slug"]), d["prev"], d["low"], d["pct"],
-                 " HOT" if d["hot"] else "", "emailed" if sent else "LOGGED ONLY")
+                 " HOT" if d["hot"] else "", sent)
     return 0
 
 

@@ -25,8 +25,10 @@ its standing immediately); nothing repeats until the standing changes.
 State is `cv_undercut_state` in the database for the same reason
 cv_drop_alert keeps its state there: runner disk is wiped every chain.
 
-Each digest goes out as ONE email plus dice_alerts rows (kind
-"CrowdVolt Undercut") and ONE web push, exactly like cv_drop_alert.
+Each digest goes to the app feed (dice_alerts rows, kind "CrowdVolt
+Undercut") with ONE web push, like cv_drop_alert. Only a digest holding
+an actual undercut is also emailed; matched / back on top / gone are
+information and stay out of the inbox.
 
 Env knobs:
     CV_UNDERCUT_TOL=0.5   dollars of slack before "under" counts as under
@@ -376,20 +378,21 @@ def run(dry: bool = False, status_only: bool = False) -> int:
     subject, text, body = render_digest(alerts)
     if dry:
         print(f"\n--- DRY DIGEST ---\nSUBJECT: {subject}\n{text}------------------")
-        sent = True
+        sent = "dry run"
     else:
         rows = feed_rows(alerts)
-        icon = "🔻" if any(a["kind"] == "undercut" for a in alerts) else "💜"
+        under = any(a["kind"] == "undercut" for a in alerts)
+        icon = "🔻" if under else "💜"
         push_body = "\n".join(f"{r['event_name']}: {r['summary']}" for r in rows)
         res = cv_feed.deliver(sb, rows, f"{icon} " + subject, push_body,
-                              email=lambda: cv_email.send(subject, text, body))
-        sent = res.emailed
+                              email=(lambda: cv_email.send(subject, text, body)) if under else None)
+        sent = "emailed" if res.emailed else ("in app feed" if res.feed_ids else "LOGGED ONLY")
 
     for a in alerts:
         c = a["cur"]
         log.info("%-12s %s mine $%.0f low $%.0f %s", a["kind"].upper(),
                  cv_log.event_id(c["slug"]), c["my_price"], c["low"],
-                 "emailed" if sent else "LOGGED ONLY")
+                 sent)
     return 0
 
 
